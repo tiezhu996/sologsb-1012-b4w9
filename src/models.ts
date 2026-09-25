@@ -3,6 +3,41 @@ export type Difficulty = '入门' | '进阶' | '挑战';
 export type CameraAngle = '正面' | '左侧 45°' | '右侧 45°' | '俯拍手部' | '全身远景';
 export type CaptionPosition = '下方安全区' | '上移 15%' | '角标提示' | '画面中央';
 export type GestureZone = '左侧' | '中央' | '右侧';
+export type AnnotationSeverity = '阻断' | '重要' | '建议';
+
+/** 批注被标记已处理后，若以下字段再次变化，批注会自动重新打开 */
+export type TrackedFieldKey = 'demoTitle' | 'demoUrl' | 'caption' | 'altText' | 'prerequisiteId';
+
+export const TRACKED_FIELDS: { key: TrackedFieldKey; label: string }[] = [
+  { key: 'demoTitle', label: '示范片段' },
+  { key: 'demoUrl', label: '示范素材地址' },
+  { key: 'caption', label: '字幕' },
+  { key: 'altText', label: '替代文本' },
+  { key: 'prerequisiteId', label: '前置条件' },
+];
+
+/** 一次「已处理 → 内容再变更 → 重新打开」记录，保留前后两个修改时间 */
+export interface AnnotationReopenRecord {
+  resolvedAt: string;
+  reopenedAt: string;
+  changedFields: TrackedFieldKey[];
+}
+
+export interface StepAnnotation {
+  id: string;
+  stepId: string;
+  severity: AnnotationSeverity;
+  requirement: string;
+  author: string;
+  createdAt: string;
+  resolved: boolean;
+  resolvedAt?: string;
+  /** 标记已处理那一刻的受关注字段内容指纹，用于判断之后是否「又变了」 */
+  baseline?: Partial<Record<TrackedFieldKey, string>>;
+  reopenHistory: AnnotationReopenRecord[];
+  /** 冻结封存时间；修订版中未处理批注会清除该标记 */
+  sealedAt?: string;
+}
 
 export interface LessonStep {
   id: string;
@@ -23,6 +58,8 @@ export interface LessonStep {
   prerequisiteId: string;
   difficulty: Difficulty;
   cuePoints: number[];
+  /** 该学习步骤的复核批注，与课程一起保存在本机 */
+  annotations: StepAnnotation[];
 }
 
 export interface CourseModule {
@@ -92,6 +129,7 @@ export function createDemoProject(): CourseProject {
           prerequisiteId: '',
           difficulty: '入门',
           cuePoints: [4, 16, 28],
+          annotations: [],
         },
         {
           id: 'step-1-2',
@@ -112,6 +150,7 @@ export function createDemoProject(): CourseProject {
           prerequisiteId: 'step-1-1',
           difficulty: '入门',
           cuePoints: [6, 24, 42],
+          annotations: [],
         },
         {
           id: 'step-1-3',
@@ -132,6 +171,7 @@ export function createDemoProject(): CourseProject {
           prerequisiteId: 'step-1-2',
           difficulty: '进阶',
           cuePoints: [10, 34, 57],
+          annotations: [],
         },
       ],
     },
@@ -160,6 +200,7 @@ export function createDemoProject(): CourseProject {
           prerequisiteId: '',
           difficulty: '入门',
           cuePoints: [8, 26, 44],
+          annotations: [],
         },
         {
           id: 'step-2-2',
@@ -180,6 +221,7 @@ export function createDemoProject(): CourseProject {
           prerequisiteId: 'step-2-1',
           difficulty: '进阶',
           cuePoints: [5, 22, 37],
+          annotations: [],
         },
       ],
     },
@@ -253,4 +295,48 @@ export function validateProject(project: CourseProject): ValidationCheck[] {
 
 export function cloneProject(project: CourseProject): CourseProject {
   return structuredClone(project);
+}
+
+export function findStep(project: CourseProject, stepId: string): { module: CourseModule; step: LessonStep } | undefined {
+  for (const module of project.modules) {
+    const step = module.steps.find((candidate) => candidate.id === stepId);
+    if (step) return { module, step };
+  }
+  return undefined;
+}
+
+/** 提取批注受关注字段（示范、字幕、替代文本、前置条件）的内容指纹 */
+export function annotationBaseline(step: LessonStep): Partial<Record<TrackedFieldKey, string>> {
+  const baseline: Partial<Record<TrackedFieldKey, string>> = {};
+  TRACKED_FIELDS.forEach(({ key }) => { baseline[key] = String(step[key] ?? ''); });
+  return baseline;
+}
+
+/** 返回与处理时基线相比发生变化的受关注字段 */
+export function annotationDiff(step: LessonStep, baseline?: Partial<Record<TrackedFieldKey, string>>): TrackedFieldKey[] {
+  if (!baseline) return [];
+  return TRACKED_FIELDS
+    .map(({ key }) => key)
+    .filter((key) => String(step[key] ?? '') !== (baseline[key] ?? ''));
+}
+
+export function openBlockingAnnotationCount(project: CourseProject): number {
+  let count = 0;
+  project.modules.forEach((module) => module.steps.forEach((step) => {
+    count += step.annotations.filter((annotation) => !annotation.resolved && annotation.severity === '阻断').length;
+  }));
+  return count;
+}
+
+/** 兼容旧版本：为从 localStorage 读出、还没有批注字段的步骤补齐数据 */
+export function normalizeProject(project: CourseProject): CourseProject {
+  project.modules = (project.modules ?? []).map((module) => ({
+    ...module,
+    steps: (module.steps ?? []).map((step) => ({
+      ...step,
+      annotations: Array.isArray(step.annotations) ? step.annotations : [],
+    })),
+  }));
+  project.frozenVersions = project.frozenVersions ?? [];
+  return project;
 }

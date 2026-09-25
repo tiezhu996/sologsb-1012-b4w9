@@ -77,6 +77,11 @@ ion-content { --background: var(--studio-canvas); }
 .step-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .step-copy small { display: block; margin-top: 3px; color: var(--studio-muted); font-size: 9px; }
 .step-issue-count { min-width: 20px; height: 20px; padding: 0 5px; display: grid; place-items: center; border-radius: 10px; background: #fff1df; color: #8e5300; font-size: 9px; }
+.step-note-count { min-width: 20px; height: 20px; padding: 0 5px; display: grid; place-items: center; border-radius: 10px; background: #e4f2ed; color: #155f55; font-size: 9px; font-weight: 700; }
+.step-note-count.blocking { background: #fee4e2; color: #b42318; }
+.step-note-line { display: flex; align-items: center; gap: 4px; }
+.step-note-line i { width: 5px; height: 5px; border-radius: 50%; background: #1f675b; }
+.step-note-line i.blocking { background: #d92d20; }
 .module-editor { padding: 12px; border-top: 1px solid var(--studio-line); background: #f1f6f4; display: flex; flex-direction: column; gap: 8px; }
 .module-editor .studio-input { --min-height: 42px; font-size: 11px; }
 
@@ -199,6 +204,53 @@ ion-content { --background: var(--studio-canvas); }
 .all-clear { padding: 44px 20px; border: 1px solid #aad7c8; border-radius: 10px; background: #effaf6; text-align: center; color: #27705f; }
 .all-clear strong { font-size: 15px; }
 .all-clear p { margin: 6px 0 0; font-size: 10px; }
+
+/* ── 步骤复核批注 ─────────────────────────────── */
+.annotations-card .section-title > span { background: #fdebe6; color: #a33a1f; }
+.annotations-empty { margin: 0; color: var(--studio-muted); font-size: 10px; line-height: 1.6; }
+.annotations-hint { margin: 10px 0 0; padding: 8px 10px; border-radius: 7px; background: #f5f8f7; color: var(--studio-muted); font-size: 10px; line-height: 1.55; }
+.annotation-list { display: flex; flex-direction: column; gap: 9px; }
+.annotation-item { padding: 11px 12px; border: 1px solid var(--studio-line); border-left-width: 4px; border-radius: 8px; background: #fcfdfc; }
+.annotation-item.sev-阻断 { border-left-color: #d92d20; }
+.annotation-item.sev-重要 { border-left-color: #dc9b26; }
+.annotation-item.sev-建议 { border-left-color: #4d8fb8; }
+.annotation-item.resolved { background: #f4f9f5; border-left-color: #3f9d6f; }
+.annotation-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.annotation-badge { font-size: 9px; }
+.annotation-meta { color: var(--studio-muted); font-size: 9px; flex: 1; min-width: 120px; }
+.annotation-meta em { font-style: normal; color: #2f7a5b; }
+.annotation-actions { display: flex; gap: 2px; margin-left: auto; }
+.annotation-actions .studio-button { font-size: 10px; --padding-start: 8px; --padding-end: 8px; }
+.annotation-body { margin-top: 9px; display: flex; flex-direction: column; gap: 7px; }
+.annotation-severity { margin-top: 0; max-width: 260px; }
+.annotation-sev-tag { display: inline-block; font-size: 10px; color: var(--studio-muted); }
+.annotation-sev-tag.sev-阻断 { color: #b42318; font-weight: 700; }
+.annotation-sev-tag.sev-重要 { color: #8e5300; font-weight: 700; }
+.annotation-requirement { margin: 0; font-size: 11px; line-height: 1.6; white-space: pre-wrap; }
+.annotation-history { margin-top: 9px; padding: 8px 10px; border-radius: 7px; background: #fff7ed; border: 1px dashed #e3b16a; }
+.annotation-history > strong { display: block; margin-bottom: 5px; color: #8e5300; font-size: 9px; letter-spacing: .06em; }
+.reopen-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 7px; font-size: 9px; color: #6f4b14; }
+.reopen-row + .reopen-row { margin-top: 5px; padding-top: 5px; border-top: 1px dashed #ecd2a2; }
+.reopen-arrow { color: #c28a3a; }
+.reopen-at { color: #b42318; font-weight: 700; }
+.reopen-row small { width: 100%; color: var(--studio-muted); }
+.annotation-composer { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--studio-line); display: flex; flex-direction: column; gap: 6px; }
+.composer-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.composer-row .studio-input { margin: 0; }
+.annotation-composer > .studio-button { align-self: flex-start; margin-top: 4px; }
+.composer-hint { margin: 0; color: var(--studio-muted); font-size: 9px; line-height: 1.5; }
+
+.annotation-review { margin-bottom: 14px; }
+.annotation-review-head h3 { margin: 0 0 8px; font-size: 12px; color: #155f55; }
+.annotation-check.sev-阻断 { border-left-color: #d92d20; background: #fff7f6; }
+.annotation-check.sev-重要 { border-left-color: #dc9b26; }
+.annotation-check.sev-建议 { border-left-color: #4d8fb8; }
+.frozen-archive { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--studio-line); }
+.frozen-archive h3 { margin: 0 0 8px; font-size: 11px; color: var(--studio-muted); }
+.frozen-version-item { padding: 10px 12px; border: 1px solid var(--studio-line); border-radius: 8px; background: #f8fbfa; }
+.frozen-version-item strong, .frozen-version-item small { display: block; }
+.frozen-version-item strong { font-size: 11px; }
+.frozen-version-item small { margin-top: 3px; color: var(--studio-muted); font-size: 9px; }
 
 @media (max-width: 1260px) {
   .studio-workspace { grid-template-columns: 245px minmax(500px, 1fr) 340px; }
