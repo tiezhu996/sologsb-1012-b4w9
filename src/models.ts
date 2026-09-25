@@ -1,5 +1,7 @@
 export type CourseStatus = 'draft' | 'review' | 'changes' | 'frozen';
 export type Difficulty = '入门' | '进阶' | '挑战';
+export type AnnotationSeverity = 'blocking' | 'major' | 'minor';
+export type AnnotationStatus = 'open' | 'resolved';
 export type CameraAngle = '正面' | '左侧 45°' | '右侧 45°' | '俯拍手部' | '全身远景';
 export type CaptionPosition = '下方安全区' | '上移 15%' | '角标提示' | '画面中央';
 export type GestureZone = '左侧' | '中央' | '右侧';
@@ -33,6 +35,28 @@ export interface CourseModule {
   steps: LessonStep[];
 }
 
+export interface StepAnnotation {
+  id: string;
+  moduleId: string;
+  stepId: string;
+  severity: AnnotationSeverity;
+  requirement: string;
+  status: AnnotationStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  reopenedAt?: string;
+  reopenCount: number;
+}
+
+/** 这些步骤字段在批注标记“已处理”后再次变更时，会触发批注自动重新打开。 */
+export const ANNOTATION_WATCH_FIELDS: (keyof LessonStep)[] = ['demoTitle', 'demoUrl', 'caption', 'captionPosition', 'altText', 'prerequisiteId'];
+
+export const ANNOTATION_SEVERITY_LABEL: Record<AnnotationSeverity, string> = {
+  blocking: '阻断',
+  major: '重要',
+  minor: '建议',
+};
+
 export interface FrozenVersion {
   id: string;
   label: string;
@@ -49,6 +73,7 @@ export interface CourseProject {
   selectedModuleId: string;
   selectedStepId: string;
   modules: CourseModule[];
+  annotations: StepAnnotation[];
   frozenVersions: FrozenVersion[];
   lastSavedAt: string;
   revision: number;
@@ -194,9 +219,41 @@ export function createDemoProject(): CourseProject {
     selectedModuleId: 'module-1',
     selectedStepId: 'step-1-2',
     modules,
+    annotations: [
+      {
+        id: 'ann-demo-1',
+        moduleId: 'module-1',
+        stepId: 'step-1-2',
+        severity: 'blocking',
+        requirement: '字幕放在画面中央会挡住中央手形，请把字幕移到下方安全区，或改用角标提示后重新提交。',
+        status: 'open',
+        createdAt: new Date(Date.now() - 1000 * 60 * 60 * 26).toISOString(),
+        reopenCount: 0,
+      },
+      {
+        id: 'ann-demo-2',
+        moduleId: 'module-2',
+        stepId: 'step-2-1',
+        severity: 'minor',
+        requirement: '建议在字幕里补充“手腕保持不动”的提示，方便教师现场提醒。',
+        status: 'resolved',
+        createdAt: new Date(Date.now() - 1000 * 60 * 60 * 50).toISOString(),
+        resolvedAt: new Date(Date.now() - 1000 * 60 * 60 * 20).toISOString(),
+        reopenCount: 0,
+      },
+    ],
     frozenVersions: [],
     lastSavedAt: new Date().toISOString(),
     revision: 1,
+  };
+}
+
+/** 兼容旧版本地存档：补齐后加的批注等字段，避免读取时报错。 */
+export function normalizeProject(project: CourseProject): CourseProject {
+  return {
+    ...project,
+    annotations: Array.isArray(project.annotations) ? project.annotations : [],
+    frozenVersions: Array.isArray(project.frozenVersions) ? project.frozenVersions : [],
   };
 }
 

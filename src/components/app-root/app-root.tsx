@@ -1,11 +1,15 @@
 import { Component, Host, State, h, Listen } from '@stencil/core';
 import {
+  ANNOTATION_SEVERITY_LABEL,
+  ANNOTATION_WATCH_FIELDS,
   cloneProject,
   createDemoProject,
+  normalizeProject,
   selectedModule,
   selectedStep,
   STORAGE_KEY,
   validateProject,
+  type AnnotationSeverity,
   type CameraAngle,
   type CaptionPosition,
   type CourseModule,
@@ -13,6 +17,7 @@ import {
   type Difficulty,
   type GestureZone,
   type LessonStep,
+  type StepAnnotation,
   type ValidationCheck,
 } from '../../models';
 
@@ -31,6 +36,8 @@ export class AppRoot {
   @State() playProgress = 0;
   @State() offline = typeof navigator !== 'undefined' ? !navigator.onLine : false;
   @State() toast?: { color: string; message: string };
+  @State() annotationSeverity: AnnotationSeverity = 'major';
+  @State() annotationRequirement = '';
   private past: CourseProject[] = [];
   private future: CourseProject[] = [];
   private playTimer?: number;
@@ -38,7 +45,7 @@ export class AppRoot {
   componentWillLoad(): void {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) this.project = JSON.parse(saved) as CourseProject;
+      if (saved) this.project = normalizeProject(JSON.parse(saved) as CourseProject);
     } catch {
       this.project = createDemoProject();
     }
@@ -101,8 +108,8 @@ export class AppRoot {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(this.project));
   }
 
-  private commit(update: (draft: CourseProject) => CourseProject, toast?: string): void {
-    if (this.project.status === 'frozen') {
+  private commit(update: (draft: CourseProject) => CourseProject, toast?: string, allowWhileFrozen = false): void {
+    if (this.project.status === 'frozen' && !allowWhileFrozen) {
       this.showToast('warning', '当前版本已冻结，请先创建修订版。');
       return;
     }
@@ -154,13 +161,29 @@ export class AppRoot {
   private updateStep(patch: Partial<LessonStep>, toast?: string): void {
     const stepId = this.currentStep?.id;
     if (!stepId) return;
-    this.commit((draft) => ({
-      ...draft,
-      modules: draft.modules.map((module) => module.id === draft.selectedModuleId ? {
-        ...module,
-        steps: module.steps.map((step) => step.id === stepId ? { ...step, ...patch } : step),
-      } : module),
-    }), toast);
+    const touchesWatched = Object.keys(patch).some((key) => (ANNOTATION_WATCH_FIELDS as string[]).includes(key));
+    let reopened = 0;
+    this.commit((draft) => {
+      const next: CourseProject = {
+        ...draft,
+        modules: draft.modules.map((module) => module.id === draft.selectedModuleId ? {
+          ...module,
+          steps: module.steps.map((step) => step.id === stepId ? { ...step, ...patch } : step),
+        } : module),
+      };
+      if (touchesWatched) {
+        const now = new Date().toISOString();
+        next.annotations = next.annotations.map((annotation): StepAnnotation => {
+          if (annotation.stepId !== stepId || annotation.status !== 'resolved') return annotation;
+          reopened += 1;
+          return { ...annotation, status: 'open', reopenedAt: now, reopenCount: annotation.reopenCount + 1 };
+        });
+      }
+      return next;
+    }, toast);
+    if (reopened > 0) {
+      this.showToast('warning', `${reopened} 条已处理批注因示范、字幕、替代文本或前置条件变更而重新打开。`);
+    }
   }
 
   private updateCurrentModule(patch: Partial<CourseModule>): void {
@@ -238,8 +261,9 @@ export class AppRoot {
         ...module,
         steps: module.steps.filter((step) => step.id !== stepId),
       } : module),
+      annotations: draft.annotations.filter((annotation) => annotation.stepId !== stepId),
       selectedStepId: this.currentModule.steps.find((step) => step.id !== stepId)?.id ?? '',
-    }), '已删除学习步骤。');
+    }), '已删除学习步骤，相关批注一并移除。');
   }
 
   private moveStep(direction: number): void {
@@ -291,6 +315,18 @@ export class AppRoot {
       this.showToast('danger', `冻结前仍有 ${blocking.length} 个阻断问题。`);
       return;
     }
+    const blockingAnnotations = this.project.annotations.filter((annotation) => annotation.status === 'open' && annotation.severity === 'blocking');
+    if (blockingAnnotations.length) {
+      const first = blockingAnnotations[0];
+      const module = this.project.modules.find((item) => item.id === first.moduleId);
+      if (module?.steps.some((step) => step.id === first.stepId)) {
+        this.project = { ...this.project, selectedModuleId: module.id, selectedStepId: first.stepId };
+        this.persist();
+      }
+      this.activePanel = 'editor';
+      this.showToast('danger', `仍有 ${blockingAnnotations.length} 条阻断批注未处理，处理完成后才能冻结。`);
+      return;
+    }
     this.commit((draft) => {
       const { frozenVersions, ...snapshot } = cloneProject(draft);
       const version = {
@@ -300,12 +336,51 @@ export class AppRoot {
         snapshot,
       };
       return { ...draft, status: 'frozen', frozenVersions: [version, ...frozenVersions] };
-    }, '当前课程版本已冻结。');
+    }, '当前课程版本已冻结，批注已随版本封存。');
     this.playing = false;
   }
 
   private reviseFrozen(): void {
-    this.commit((draft) => ({ ...draft, status: 'draft' }), '已创建修订版，可继续编辑。');
+    const openCount = this.project.annotations.filter((annotation) => annotation.status === 'open').length;
+    this.commit(
+      (draft) => ({
+        ...draft,
+        status: 'draft',
+        annotations: draft.annotations.filter((annotation) => annotation.status === 'open'),
+      }),
+      openCount > 0 ? `已创建修订版，带入 ${openCount} 条未处理批注；已处理批注留在冻结版本中。` : '已创建修订版，可继续编辑。',
+      true,
+    );
+  }
+
+  private addAnnotation(): void {
+    const step = this.currentStep;
+    const requirement = this.annotationRequirement.trim();
+    if (!step || !requirement || this.project.status === 'frozen') return;
+    const annotation: StepAnnotation = {
+      id: `ann-${Date.now().toString(36)}`,
+      moduleId: this.currentModule.id,
+      stepId: step.id,
+      severity: this.annotationSeverity,
+      requirement,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+      reopenCount: 0,
+    };
+    this.commit((draft) => ({ ...draft, annotations: [...draft.annotations, annotation] }), '已添加复核批注。');
+    this.annotationRequirement = '';
+  }
+
+  private resolveAnnotation(id: string): void {
+    const now = new Date().toISOString();
+    this.commit((draft) => ({
+      ...draft,
+      annotations: draft.annotations.map((annotation): StepAnnotation => annotation.id === id ? { ...annotation, status: 'resolved', resolvedAt: now } : annotation),
+    }), '已标记为已处理；相关内容再次变更时批注会自动重新打开。');
+  }
+
+  private deleteAnnotation(id: string): void {
+    this.commit((draft) => ({ ...draft, annotations: draft.annotations.filter((annotation) => annotation.id !== id) }), '已删除批注。');
   }
 
   private togglePlay(): void {
@@ -342,6 +417,8 @@ export class AppRoot {
   private renderStepListItem(step: LessonStep, index: number) {
     const active = step.id === this.currentStep?.id;
     const issueCount = this.checks.filter((check) => check.stepId === step.id && check.severity !== 'info').length;
+    const openAnnotations = this.project.annotations.filter((annotation) => annotation.stepId === step.id && annotation.status === 'open');
+    const hasBlocking = openAnnotations.some((annotation) => annotation.severity === 'blocking');
     return (
       <button class={`step-list-item ${active ? 'active' : ''}`} onClick={() => this.selectStep(step.id)}>
         <span class="step-index">{String(index + 1).padStart(2, '0')}</span>
@@ -349,7 +426,10 @@ export class AppRoot {
           <strong>{step.title}</strong>
           <small>{step.kind} · {step.duration}s · {step.difficulty}</small>
         </span>
-        {issueCount > 0 && <span class="step-issue-count">{issueCount}</span>}
+        <span class="step-badges">
+          {openAnnotations.length > 0 && <span class={`step-annotation-count ${hasBlocking ? 'blocking' : ''}`} title={`${openAnnotations.length} 条待处理批注`}>{openAnnotations.length}</span>}
+          {issueCount > 0 && <span class="step-issue-count">{issueCount}</span>}
+        </span>
       </button>
     );
   }
@@ -369,6 +449,8 @@ export class AppRoot {
     const frozen = this.project.status === 'frozen';
     const module = this.currentModule;
     const prerequisites = module.steps.filter((candidate, index) => candidate.id !== step.id && index < module.steps.findIndex((item) => item.id === step.id));
+    const stepAnnotations = this.project.annotations.filter((annotation) => annotation.stepId === step.id);
+    const openAnnotations = stepAnnotations.filter((annotation) => annotation.status === 'open');
     return (
       <div class="step-editor">
         <div class="editor-title-row">
@@ -459,7 +541,58 @@ export class AppRoot {
             <ion-textarea disabled={frozen} autoGrow label="练习反馈" labelPlacement="stacked" class="studio-input" value={step.exerciseFeedback} onIonInput={(event) => this.updateStep({ exerciseFeedback: event.detail.value ?? '' })} />
           </div>
         </section>
+
+        <section class="form-card annotation-section">
+          <div class="section-title">
+            <span>05</span>
+            <div><h2>复核批注</h2><p>复核者填写严重程度与处理要求，教师处理后标记；冻结时随版本封存</p></div>
+            {openAnnotations.length > 0 && <ion-badge color="warning" class="annotation-open-badge">{openAnnotations.length} 条待处理</ion-badge>}
+          </div>
+
+          {stepAnnotations.length === 0 && <p class="annotation-empty">暂无批注。复核者可在下方选择严重程度并填写处理要求。</p>}
+
+          <div class="annotation-list">
+            {stepAnnotations.map((annotation) => this.renderAnnotation(annotation, frozen))}
+          </div>
+
+          <div class="annotation-composer">
+            <ion-select disabled={frozen} label="严重程度" labelPlacement="stacked" class="studio-input" value={this.annotationSeverity} onIonChange={(event) => { this.annotationSeverity = event.detail.value as AnnotationSeverity; }}>
+              <ion-select-option value="blocking">阻断 · 未处理完不能冻结</ion-select-option>
+              <ion-select-option value="major">重要 · 需要处理</ion-select-option>
+              <ion-select-option value="minor">建议 · 可择期处理</ion-select-option>
+            </ion-select>
+            <ion-textarea disabled={frozen} autoGrow label="处理要求" labelPlacement="stacked" class="studio-input" placeholder="说明需要教师修改的内容与验收标准" value={this.annotationRequirement} onIonInput={(event) => { this.annotationRequirement = event.detail.value ?? ''; }} />
+            <ion-button class="studio-button annotation-add" disabled={frozen || !this.annotationRequirement.trim()} onClick={() => this.addAnnotation()}>添加批注</ion-button>
+          </div>
+        </section>
       </div>
+    );
+  }
+
+  private renderAnnotation(annotation: StepAnnotation, frozen: boolean) {
+    const reopened = annotation.status === 'open' && Boolean(annotation.reopenedAt);
+    return (
+      <article class={`annotation-item severity-${annotation.severity} ${annotation.status}`} key={annotation.id}>
+        <header class="annotation-head">
+          <span class={`annotation-severity severity-${annotation.severity}`}>{ANNOTATION_SEVERITY_LABEL[annotation.severity]}</span>
+          <span class={`annotation-status ${annotation.status} ${reopened ? 'reopened' : ''}`}>
+            {annotation.status === 'resolved' ? '已处理' : reopened ? '已重新打开' : '待处理'}
+          </span>
+          <span class="annotation-spacer" />
+          <button class="annotation-delete" disabled={frozen} title="删除批注" onClick={() => this.deleteAnnotation(annotation.id)}>删除</button>
+        </header>
+        <p class="annotation-requirement">{annotation.requirement}</p>
+        <dl class="annotation-times">
+          <div><dt>批注于</dt><dd>{this.formatDate(annotation.createdAt)}</dd></div>
+          {annotation.resolvedAt && <div><dt>标记已处理</dt><dd>{this.formatDate(annotation.resolvedAt)}</dd></div>}
+          {annotation.reopenedAt && <div><dt>内容变更重新打开</dt><dd>{this.formatDate(annotation.reopenedAt)}{annotation.reopenCount > 1 ? `（第 ${annotation.reopenCount} 次）` : ''}</dd></div>}
+        </dl>
+        <footer class="annotation-foot">
+          {annotation.status === 'open'
+            ? <ion-button size="small" class="studio-button" disabled={frozen} onClick={() => this.resolveAnnotation(annotation.id)}>标记已处理</ion-button>
+            : <span class="annotation-hint">若示范、字幕、替代文本或前置条件再次变更，此批注会自动重新打开。</span>}
+        </footer>
+      </article>
     );
   }
 
@@ -515,12 +648,15 @@ export class AppRoot {
     const errors = this.checks.filter((check) => check.severity === 'error');
     const warnings = this.checks.filter((check) => check.severity === 'warning');
     const info = this.checks.filter((check) => check.severity === 'info');
+    const openAnnotations = this.project.annotations.filter((annotation) => annotation.status === 'open');
+    const blockingAnnotations = openAnnotations.filter((annotation) => annotation.severity === 'blocking').length;
     return (
       <section class="checks-panel">
         <div class="checks-summary">
           <div class="check-stat danger"><strong>{errors.length}</strong><span>阻断问题</span></div>
           <div class="check-stat warning"><strong>{warnings.length}</strong><span>需注意</span></div>
           <div class="check-stat"><strong>{info.length}</strong><span>优化建议</span></div>
+          <div class={`check-stat ${blockingAnnotations ? 'danger' : 'warning'}`}><strong>{openAnnotations.length}</strong><span>待处理批注</span></div>
         </div>
         <div class="check-list">
           {this.checks.length === 0 && <div class="all-clear"><strong>✓ 未发现问题</strong><p>字幕遮挡、步骤跳级和替代文本检查均已通过。</p></div>}
@@ -536,6 +672,26 @@ export class AppRoot {
             </button>
           ))}
         </div>
+        {this.project.frozenVersions.length > 0 && (
+          <div class="frozen-archive">
+            <div class="section-title"><span>档</span><div><h2>冻结版本存档</h2><p>冻结时批注随版本一起封存，修订版只带入未处理项</p></div></div>
+            <div class="frozen-list">
+              {this.project.frozenVersions.map((version) => {
+                const sealed = version.snapshot.annotations ?? [];
+                const sealedOpen = sealed.filter((annotation) => annotation.status === 'open').length;
+                return (
+                  <div class="frozen-item" key={version.id}>
+                    <div class="frozen-item-head">
+                      <strong>{version.label}</strong>
+                      <span>{this.formatDate(version.createdAt)} 封存</span>
+                    </div>
+                    <span class="frozen-item-meta">封存批注 {sealed.length} 条 · 其中未处理 {sealedOpen} 条</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </section>
     );
   }
@@ -543,6 +699,8 @@ export class AppRoot {
   render() {
     const module = this.currentModule;
     const errors = this.checks.filter((check) => check.severity === 'error').length;
+    const openAnnotations = this.project.annotations.filter((annotation) => annotation.status === 'open');
+    const blockingAnnotations = openAnnotations.filter((annotation) => annotation.severity === 'blocking').length;
     return (
       <Host>
         <ion-app>
@@ -577,6 +735,7 @@ export class AppRoot {
                 <div><strong>{this.project.modules.reduce((sum, item) => sum + item.steps.length, 0)}</strong><span>步骤</span></div>
                 <div><strong>{Math.ceil(this.project.modules.reduce((sum, item) => sum + item.steps.reduce((total, lesson) => total + lesson.duration, 0), 0) / 60)}</strong><span>分钟</span></div>
                 <div class={errors ? 'has-errors' : ''}><strong>{errors}</strong><span>阻断问题</span></div>
+                <div class={blockingAnnotations ? 'has-errors' : ''}><strong>{openAnnotations.length}</strong><span>待处理批注</span></div>
               </div>
               <div class="workflow-actions">
                 {this.project.status === 'review' && <ion-button fill="clear" color="danger" class="studio-button" onClick={() => this.returnForChanges()}>退回修改</ion-button>}
